@@ -24,6 +24,14 @@ def load_answer_key():
         pass
     return ['B', 'C', 'A', 'D', 'B', 'A', 'C', 'D', 'A', 'B']
 
+def save_answer_key(answers):
+    """حفظ الإجابات الصحيحة في ملف"""
+    try:
+        with open('answer_key.json', 'w', encoding='utf-8') as f:
+            json.dump({'answers': answers, 'updated': datetime.now().isoformat()}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"❌ خطأ في حفظ الإجابات: {e}")
+
 ANSWER_KEY = load_answer_key()
 
 def order_points(pts):
@@ -62,161 +70,178 @@ def four_point_transform(image, pts):
 
 def detect_exam_contour(image):
     """كشف وتصحيح منظور ورقة الامتحان"""
-    # تحسين الصورة
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    # كشف الحواف
-    edged = cv2.Canny(blurred, 50, 150)
-    
-    # العثور على الكنتورات
-    cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = imutils.grab_contours(cnts)
-    
-    # البحث عن أكبر كنتر رباعي (ورقة الامتحان)
-    docCnt = None
-    if len(cnts) > 0:
-        cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
-        for c in cnts:
-            peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            if len(approx) == 4:
-                docCnt = approx
-                break
-    
-    if docCnt is not None:
-        # تحويل منظور الصورة
-        warped = four_point_transform(gray, docCnt.reshape(4, 2))
-        return warped, True
-    else:
-        # إذا لم نجد ورقة، نستخدم الصورة كما هي
+    try:
+        # تحسين الصورة
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # كشف الحواف
+        edged = cv2.Canny(blurred, 50, 150)
+        
+        # العثور على الكنتورات
+        cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = imutils.grab_contours(cnts)
+        
+        # البحث عن أكبر كنتر رباعي (ورقة الامتحان)
+        docCnt = None
+        if len(cnts) > 0:
+            cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+            for c in cnts:
+                peri = cv2.arcLength(c, True)
+                approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+                if len(approx) == 4:
+                    docCnt = approx
+                    break
+        
+        if docCnt is not None:
+            # تحويل منظور الصورة
+            warped = four_point_transform(gray, docCnt.reshape(4, 2))
+            return warped, True
+        else:
+            # إذا لم نجد ورقة، نستخدم الصورة كما هي
+            return gray, False
+    except Exception as e:
+        print(f"❌ خطأ في detect_exam_contour: {e}")
+        # في حالة الخطأ، نعود للصورة الرمادية الأساسية
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         return gray, False
 
 def find_bubbles_debug(image):
     """كشف الفقاعات مع وضع التصحيح"""
-    # استخدام adaptive threshold للتعامل مع الإضاءة المختلفة
-    thresh = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                  cv2.THRESH_BINARY_INV, 11, 2)
-    
-    # تنظيف الصورة
-    kernel = np.ones((2,2), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-    
-    # العثور على الكنتورات
-    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = imutils.grab_contours(cnts)
-    
-    bubbles = []
-    debug_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    
-    for c in cnts:
-        area = cv2.contourArea(c)
-        if area < 50 or area > 1000:  # نطاق مساحة الفقاعات
-            continue
-            
-        # حساب الاستدارة
-        perimeter = cv2.arcLength(c, True)
-        if perimeter == 0:
-            continue
-            
-        circularity = 4 * np.pi * area / (perimeter * perimeter)
-        if circularity < 0.5:  # أقل استدارة مسموحة
-            continue
-            
-        # الحصول على المستطيل المحيط
-        (x, y, w, h) = cv2.boundingRect(c)
-        aspect_ratio = w / float(h)
+    try:
+        # استخدام adaptive threshold للتعامل مع الإضاءة المختلفة
+        thresh = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                      cv2.THRESH_BINARY_INV, 11, 2)
         
-        if 0.5 <= aspect_ratio <= 1.5:  # نطاق أوسع لنسبة الأبعاد
-            # حساب نسبة التعبئة
-            mask = np.zeros(thresh.shape, dtype="uint8")
-            cv2.drawContours(mask, [c], -1, 255, -1)
-            mask = cv2.bitwise_and(thresh, thresh, mask=mask)
-            total = cv2.countNonZero(mask)
+        # تنظيف الصورة
+        kernel = np.ones((2,2), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        
+        # العثور على الكنتورات
+        cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = imutils.grab_contours(cnts)
+        
+        bubbles = []
+        debug_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        
+        for c in cnts:
+            area = cv2.contourArea(c)
+            if area < 50 or area > 1000:  # نطاق مساحة الفقاعات
+                continue
+                
+            # حساب الاستدارة
+            perimeter = cv2.arcLength(c, True)
+            if perimeter == 0:
+                continue
+                
+            circularity = 4 * np.pi * area / (perimeter * perimeter)
+            if circularity < 0.5:  # أقل استدارة مسموحة
+                continue
+                
+            # الحصول على المستطيل المحيط
+            (x, y, w, h) = cv2.boundingRect(c)
+            aspect_ratio = w / float(h)
             
-            filled_ratio = total / area
-            
-            bubbles.append({
-                'contour': c,
-                'center': (x + w//2, y + h//2),
-                'bbox': (x, y, w, h),
-                'filled_ratio': filled_ratio
-            })
-            
-            # رسم على صورة التصحيح
-            color = (0, 255, 0) if filled_ratio > 0.3 else (0, 0, 255)
-            cv2.rectangle(debug_img, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(debug_img, f"{filled_ratio:.2f}", (x, y-5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-    
-    print(f"🔍 تم اكتشاف {len(bubbles)} فقاعة")
-    return bubbles, debug_img
+            if 0.5 <= aspect_ratio <= 1.5:  # نطاق أوسع لنسبة الأبعاد
+                # حساب نسبة التعبئة
+                mask = np.zeros(thresh.shape, dtype="uint8")
+                cv2.drawContours(mask, [c], -1, 255, -1)
+                mask = cv2.bitwise_and(thresh, thresh, mask=mask)
+                total = cv2.countNonZero(mask)
+                
+                filled_ratio = total / area
+                
+                bubbles.append({
+                    'contour': c,
+                    'center': (x + w//2, y + h//2),
+                    'bbox': (x, y, w, h),
+                    'filled_ratio': filled_ratio
+                })
+                
+                # رسم على صورة التصحيح
+                color = (0, 255, 0) if filled_ratio > 0.3 else (0, 0, 255)
+                cv2.rectangle(debug_img, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(debug_img, f"{filled_ratio:.2f}", (x, y-5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+        
+        print(f"🔍 تم اكتشاف {len(bubbles)} فقاعة")
+        return bubbles, debug_img
+        
+    except Exception as e:
+        print(f"❌ خطأ في find_bubbles_debug: {e}")
+        return [], None
 
 def organize_and_extract_answers(bubbles, num_questions=10, options_per_question=4):
     """تنظيم الفقاعات واستخراج الإجابات"""
-    if not bubbles:
-        return ["فراغ"] * num_questions
-    
-    # ترتيب الفقاعات حسب الصفوف (من الأعلى إلى الأسفل)
-    bubbles_sorted = sorted(bubbles, key=lambda b: b['center'][1])
-    
-    # تجميع الفقاعات في صفوف
-    rows = []
-    current_row = []
-    row_height_threshold = 20  # مسافة أكبر بين الصفوف
-    
-    for bubble in bubbles_sorted:
-        if not current_row:
-            current_row.append(bubble)
-        else:
-            # التحقق إذا كانت الفقاعة في نفس الصف
-            y_diff = abs(bubble['center'][1] - current_row[0]['center'][1])
-            if y_diff <= row_height_threshold:
+    try:
+        if not bubbles:
+            print("⚠️ لم يتم اكتشاف أي فقاعات")
+            return ["فراغ"] * num_questions
+        
+        # ترتيب الفقاعات حسب الصفوف (من الأعلى إلى الأسفل)
+        bubbles_sorted = sorted(bubbles, key=lambda b: b['center'][1])
+        
+        # تجميع الفقاعات في صفوف
+        rows = []
+        current_row = []
+        row_height_threshold = 20  # مسافة أكبر بين الصفوف
+        
+        for bubble in bubbles_sorted:
+            if not current_row:
                 current_row.append(bubble)
             else:
-                # ترتيب الصف الحالي من اليسار لليمين
-                current_row.sort(key=lambda b: b['center'][0])
-                rows.append(current_row)
-                current_row = [bubble]
-    
-    if current_row:
-        current_row.sort(key=lambda b: b['center'][0])
-        rows.append(current_row)
-    
-    print(f"📊 تم تجميع {len(rows)} صف")
-    
-    # استخراج الإجابات
-    answers = []
-    for i in range(min(num_questions, len(rows))):
-        row = rows[i]
-        if len(row) < options_per_question:
+                # التحقق إذا كانت الفقاعة في نفس الصف
+                y_diff = abs(bubble['center'][1] - current_row[0]['center'][1])
+                if y_diff <= row_height_threshold:
+                    current_row.append(bubble)
+                else:
+                    # ترتيب الصف الحالي من اليسار لليمين
+                    current_row.sort(key=lambda b: b['center'][0])
+                    rows.append(current_row)
+                    current_row = [bubble]
+        
+        if current_row:
+            current_row.sort(key=lambda b: b['center'][0])
+            rows.append(current_row)
+        
+        print(f"📊 تم تجميع {len(rows)} صف")
+        
+        # استخراج الإجابات
+        answers = []
+        for i in range(min(num_questions, len(rows))):
+            row = rows[i]
+            if len(row) < options_per_question:
+                answers.append("فراغ")
+                continue
+            
+            # العثور على الفقاعة الأكثر تعبئة في الصف
+            best_bubble = None
+            best_ratio = 0
+            
+            for j, bubble in enumerate(row[:options_per_question]):
+                if bubble['filled_ratio'] > best_ratio:
+                    best_ratio = bubble['filled_ratio']
+                    best_bubble = j
+            
+            # عتبة التعبئة (يمكن تعديلها)
+            if best_ratio > 0.2:  # عتبة منخفضة للاختبار
+                options = ['A', 'B', 'C', 'D', 'E'][:options_per_question]
+                answers.append(options[best_bubble])
+                print(f"✅ السؤال {i+1}: {options[best_bubble]} (نسبة التعبئة: {best_ratio:.2f})")
+            else:
+                answers.append("فراغ")
+                print(f"❌ السؤال {i+1}: فراغ (أعلى نسبة: {best_ratio:.2f})")
+        
+        # تعبئة الأسئلة المتبقية
+        while len(answers) < num_questions:
             answers.append("فراغ")
-            continue
         
-        # العثور على الفقاعة الأكثر تعبئة في الصف
-        best_bubble = None
-        best_ratio = 0
+        return answers
         
-        for j, bubble in enumerate(row[:options_per_question]):
-            if bubble['filled_ratio'] > best_ratio:
-                best_ratio = bubble['filled_ratio']
-                best_bubble = j
-        
-        # عتبة التعبئة (يمكن تعديلها)
-        if best_ratio > 0.2:  # عتبة منخفضة للاختبار
-            options = ['A', 'B', 'C', 'D', 'E'][:options_per_question]
-            answers.append(options[best_bubble])
-            print(f"✅ السؤال {i+1}: {options[best_bubble]} (نسبة التعبئة: {best_ratio:.2f})")
-        else:
-            answers.append("فراغ")
-            print(f"❌ السؤال {i+1}: فراغ (أعلى نسبة: {best_ratio:.2f})")
-    
-    # تعبئة الأسئلة المتبقية
-    while len(answers) < num_questions:
-        answers.append("فراغ")
-    
-    return answers
+    except Exception as e:
+        print(f"❌ خطأ في organize_and_extract_answers: {e}")
+        return ["فراغ"] * num_questions
 
 @app.route('/')
 def home():
@@ -315,6 +340,8 @@ def health_check():
 @app.route('/api/answer_key', methods=['GET', 'POST'])
 def handle_answer_key():
     """إدارة الإجابات الصحيحة"""
+    global ANSWER_KEY
+    
     if request.method == 'GET':
         return jsonify({
             "answers": ANSWER_KEY,
@@ -327,8 +354,9 @@ def handle_answer_key():
             new_answers = data.get('answers', [])
             
             if new_answers:
-                global ANSWER_KEY
                 ANSWER_KEY = new_answers
+                save_answer_key(new_answers)
+                
                 return jsonify({
                     "success": True,
                     "message": f"تم تحديث {len(ANSWER_KEY)} إجابة صحيحة",
