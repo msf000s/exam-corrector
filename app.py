@@ -1,12 +1,12 @@
 from flask import Flask, request, jsonify, send_from_directory
 import os
 import json
+import base64
+import requests
+import google.generativeai as genai
 from datetime import datetime
-import traceback
 
 app = Flask(__name__, static_folder='static')
-
-# التأكد من وجود المجلدات
 os.makedirs('static', exist_ok=True)
 
 # ⚙️ تحميل الإجابات الصحيحة
@@ -21,14 +21,55 @@ def load_answer_key():
     return ['B', 'C', 'A', 'D', 'B', 'A', 'C', 'D', 'A', 'B']
 
 def save_answer_key(answers):
-    """حفظ الإجابات الصحيحة في ملف"""
     try:
         with open('answer_key.json', 'w', encoding='utf-8') as f:
-            json.dump({'answers': answers, 'updated': datetime.now().isoformat()}, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"❌ خطأ في حفظ الإجابات: {e}")
+            json.dump({'answers': answers, 'updated': datetime.now().isoformat()}, f, ensure_ascii=False)
+    except:
+        pass
 
 ANSWER_KEY = load_answer_key()
+
+# 🔑 ضع مفتاح API الخاص بك هنا
+genai.configure(api_key='YOUR_API_KEY_HERE')
+model = genai.GenerativeModel('gemini-1.5-flash')  # أو gemini-pro-vision
+
+def extract_answers_from_image(image_bytes, num_questions=10, options_per_q=4):
+    """
+    استخدام Gemini لقراءة الصورة واستخراج الإجابات
+    """
+    try:
+        # تحويل الصورة إلى تنسيق يفهمه Gemini
+        image = genai.upload_file(image_bytes)
+        
+        # مطالبة Gemini بقراءة الإجابات
+        prompt = f"""
+        أنت مساعد ذكي مسؤول عن قراءة نموذج إجابة طالب.
+        الصورة المرفقة تحتوي على {num_questions} سؤال، وكل سؤال يحتوي على {options_per_q} خيارات (A، B، C، D).
+        قم بتحليل الصورة وتحديد الخيار المظلل أو المحدد في كل سؤال.
+        يجب أن تُرجع النتيجة كمصفوفة من 10 عناصر، مثل:
+        ["A", "B", "فراغ", "D", "C", "A", "فراغ", "B", "C", "A"]
+        استخدم "فراغ" إذا لم يتم تحديد أي خيار.
+        لا تكتب أي شيء آخر، فقط المصفوفة.
+        """
+        
+        response = model.generate_content([prompt, image])
+        result = response.text.strip()
+        
+        # تحويل النص إلى مصفوفة
+        import ast
+        try:
+            answers = ast.literal_eval(result)
+            if isinstance(answers, list) and len(answers) == num_questions:
+                return answers
+            else:
+                raise ValueError("النتيجة ليست مصفوفة صحيحة")
+        except:
+            # fallback: إذا فشل التحليل، نُرجع فراغات
+            return ["فراغ"] * num_questions
+
+    except Exception as e:
+        print(f"خطأ في Gemini API: {str(e)}")
+        return ["فراغ"] * num_questions
 
 @app.route('/')
 def home():
@@ -38,21 +79,8 @@ def home():
 def static_files(path):
     return send_from_directory('static', path)
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """فحص حالة الخادم"""
-    return jsonify({
-        "status": "running",
-        "timestamp": datetime.now().isoformat(),
-        "answer_key_count": len(ANSWER_KEY),
-        "python_version": "3.10.8"
-    })
-
 @app.route('/api/answer_key', methods=['GET', 'POST'])
 def handle_answer_key():
-    """إدارة الإجابات الصحيحة"""
-    global ANSWER_KEY
-    
     if request.method == 'GET':
         return jsonify({
             "answers": ANSWER_KEY,
@@ -65,6 +93,7 @@ def handle_answer_key():
             new_answers = data.get('answers', [])
             
             if new_answers:
+                global ANSWER_KEY
                 ANSWER_KEY = new_answers
                 save_answer_key(new_answers)
                 
@@ -87,51 +116,30 @@ def handle_answer_key():
 
 @app.route('/api/correct', methods=['POST'])
 def correct():
-    """تصحيح ورقة الإجابة (نسخة مبسطة للاختبار)"""
+    """تصحيح ورقة الإجابة باستخدام Gemini API"""
     try:
-        print("🚀 بدء عملية التصحيح...")
-        
         # الحصول على المعلمات
         num_questions = request.form.get('num_questions', default=len(ANSWER_KEY), type=int)
+        options_per_q = request.form.get('options_per_q', default=4, type=int)
         
-        # التحقق من وجود الملف
+        # معالجة ملف الصورة
         if 'image' not in request.files:
             return jsonify({"error": "لم يتم تقديم صورة"}), 400
             
         file = request.files['image']
         if file.filename == '':
             return jsonify({"error": "لم يتم اختيار ملف"}), 400
-        
-        print(f"📁 معالجة الصورة: {file.filename}")
-        
-        # في هذه النسخة المبسطة، نستخدم OpenCV إذا كان متاحاً
-        try:
-            import cv2
-            import numpy as np
-            import imutils
-            
-            # قراءة الصورة
-            nparr = np.frombuffer(file.read(), np.uint8)
-            original_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if original_img is None:
-                return jsonify({"error": "فشل في قراءة الصورة"}), 400
-            
-            print(f"📐 أبعاد الصورة: {original_img.shape}")
-            
-            # محاكاة عملية التصحيح
-            student_answers = simulate_correction(num_questions)
-            
-        except ImportError:
-            print("⚠️ OpenCV غير متاح، استخدام المحاكاة")
-            student_answers = simulate_correction(num_questions)
+
+        # قراءة الصورة كـ bytes
+        image_bytes = file.read()
+
+        # استخراج الإجابات باستخدام Gemini
+        student_answers = extract_answers_from_image(image_bytes, num_questions, options_per_q)
         
         # حساب النتائج
         correct_count = sum(1 for s, c in zip(student_answers, ANSWER_KEY[:num_questions]) if s == c)
         wrong_count = num_questions - correct_count
         percentage = round((correct_count / num_questions) * 100) if num_questions > 0 else 0
-        
-        print(f"📊 النتائج: {correct_count} صحيحة، {wrong_count} خاطئة، {percentage}%")
         
         # تحضير الاستجابة
         response = {
@@ -141,42 +149,26 @@ def correct():
             "wrong_count": wrong_count,
             "percentage": percentage,
             "total_questions": num_questions,
-            "timestamp": datetime.now().isoformat(),
-            "note": "هذه نسخة مبسطة للتجربة"
+            "timestamp": datetime.now().isoformat()
         }
         
         return jsonify(response)
         
     except Exception as e:
-        print(f"❌ خطأ في التصحيح: {str(e)}")
-        traceback.print_exc()
+        print("❌ خطأ في /api/correct:", str(e))
         return jsonify({
             "success": False,
-            "error": f"خطأ في معالجة الصورة: {str(e)}"
+            "error": "خطأ داخلي في معالجة الصورة"
         }), 500
 
-def simulate_correction(num_questions):
-    """محاكاة عملية التصحيح (للاختبار فقط)"""
-    import random
-    options = ['A', 'B', 'C', 'D', 'فراغ']
-    
-    # إنشاء إجابات تحاكي النمط الحقيقي (ليست عشوائية تماماً)
-    answers = []
-    for i in range(num_questions):
-        # محاكاة أن معظم الطلاب يجيبون بشكل صحيح على بعض الأسئلة
-        if i < len(ANSWER_KEY) and random.random() > 0.3:  # 70% إجابة صحيحة
-            answers.append(ANSWER_KEY[i])
-        else:
-            # 30% إجابة خاطئة أو فارغة
-            if random.random() > 0.2:  # 80% إجابة خاطئة
-                wrong_options = [opt for opt in options if opt != ANSWER_KEY[i] and opt != 'فراغ']
-                answers.append(random.choice(wrong_options))
-            else:  # 20% إجابة فارغة
-                answers.append('فراغ')
-    
-    return answers
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "running",
+        "timestamp": datetime.now().isoformat(),
+        "answer_key_count": len(ANSWER_KEY)
+    })
 
-# إصلاح مشكلة CORS
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -186,10 +178,10 @@ def after_request(response):
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
+    debug_mode = os.environ.get("DEBUG", "False").lower() == "true"
     
     print(f"🚀 بدء تشغيل تطبيق تصحيح الاختبارات...")
     print(f"📊 عدد الإجابات الصحيحة: {len(ANSWER_KEY)}")
-    print(f"🐍 إصدار Python: 3.10.8")
     print(f"🌐 الخادم يعمل على: http://localhost:{port}")
     
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
